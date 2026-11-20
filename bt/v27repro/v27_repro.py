@@ -166,6 +166,52 @@ BMAP = {'铜': 'CU', '螺纹钢': 'RB', '锌': 'ZN', '铝': 'AL', '黄金': 'AU'
         '丙烯': 'PL', '强麦WH': 'WH', '普麦': 'PM'}
 
 
+def basis_fetch_fn(start, end, cache):
+    """在 Actions 上直接抓生意社现期表（与线上 shadow.fetch_basis 同一解析），再按 basis_fn 同口径算分位。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from ftrade import shadow
+    T = json.load(gzip.open(cache, 'rt')) if os.path.exists(cache) else {}
+    d0, d1 = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    days = [(d0 + dt.timedelta(n)).isoformat() for n in range((d1 - d0).days + 1)]
+    todo = [d for d in days if dt.date.fromisoformat(d).weekday() < 5 and d not in T]
+    t0 = time.time()
+    with ThreadPoolExecutor(6) as ex:
+        for k, (d, tab) in enumerate(zip(todo, ex.map(lambda d: shadow.fetch_basis(d, log=lambda *a: None), todo))):
+            T[d] = tab
+            if k % 300 == 0:
+                log(f'  基差抓取 {d}（{k}/{len(todo)}，{time.time() - t0:.0f}s）')
+    json.dump(T, gzip.open(cache, 'wt'))
+    rows = [(d, v, br) for d, tab in T.items() for v, br in (tab or {}).items()]
+    b = pd.DataFrame(rows, columns=['D', 'v', 'br'])
+    b['D'] = pd.to_datetime(b.D)
+    B = b.pivot_table(index='D', columns='v', values='br', aggfunc='last').sort_index()
+    return basis_from_B(B)
+
+
+def basis_from_B(B):
+    PCT = B.apply(lambda s: s.dropna().rolling(250, min_periods=120).apply(lambda x: (x[:-1] < x[-1]).mean(), raw=True).reindex(s.index))
+    idx = B.index.values
+    C = {}
+
+    def pct(v, D):
+        if v not in PCT.columns:
+            return None
+        if (v, D) not in C:
+            k = np.searchsorted(idx, np.datetime64(D), side='right') - 1
+            C[(v, D)] = np.nan if k < 0 or (np.datetime64(D) - idx[k]) > np.timedelta64(3, 'D') else PCT[v].iloc[k]
+        p = C[(v, D)]
+        return None if p is None or np.isnan(p) else float(p)
+
+    def low(v, D, dr):
+        p = pct(v, D)
+        if p is None:
+            return False
+        return (p if dr == '多' else 1 - p) <= 1 / 3
+    low.pct = pct
+    low.cover = (str(B.index.min().date()), str(B.index.max().date()), int(len(B)))
+    return low
+
+
 def basis_class_fn(path):
     """basis_class.txt.gz：由原始生意社表按 basis_fn 同口径预先算好的分类（每张表一行，每品种一个字符：
     L = 分位 ≤1/3（做多不利）、H = 分位 ≥2/3（做空不利）、M = 中间、. = 不足 120 张表）。结果与 basis_fn 完全一致，只是体积小。"""
@@ -467,7 +513,7 @@ def main():
     d0 = min(R)
     data = {'days': days[days.index(d0) - 1:], 'RAW': RAW, 'ADJ': ADJ, 'ROLLS': ROLLS, 'R': R}
     carry = carry_fn(RAW, bars)
-    blow = basis_fn(a.basis)
+    blow = basis_fetch_fn('2017-01-01', a.end, os.path.join(a.cachedir, 'basis_fetch.json.gz')) if a.basis == 'fetch' else basis_fn(a.basis)
     log(f'基差表 {blow.cover}')
     SEAT = {m: strong_fn(H, ADJ, m) for m in ('orig', 'mature', 'clean')}
     for m, f in SEAT.items():
