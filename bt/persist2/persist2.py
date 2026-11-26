@@ -52,10 +52,10 @@ def run_var(data, S, X0, early=0, k_init=3.0, add=None, rowmap=None):
 
         def step(self, D, st, sigs, touched, today=False, weak=None):
             out = super().step(D, st, sigs, touched, today, weak)
-            ex = {p['v']: p['exitNext'] for p in st['open'] if p.get('exitNext')}
+            ex = {(p['v'], p['dir']): p['exitNext'] for p in st['open'] if p.get('exitNext') and not p.get('isAdd')}
             for p in st['open']:
-                if p['v'] in ex and not p.get('exitNext'):
-                    p['exitNext'] = ex[p['v']]
+                if p.get('isAdd') and (p['v'], p['dir']) in ex and not p.get('exitNext'):
+                    p['exitNext'] = ex[(p['v'], p['dir'])]
                 if not p.get('pending'):
                     p['held'] = (p.get('age') or 0) + (p.get('ageOffset') or 0)
             if add:
