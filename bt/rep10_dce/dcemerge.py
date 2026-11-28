@@ -32,6 +32,10 @@ def main():
         p = os.path.join(sd, d + '.json.gz')
         old = gz(p) if os.path.exists(p) else {}
         add = {v: x for v, x in V.items() if v not in old}
+        for x in add.values():   # 手数统一成整数（线上 / 新浪口径）
+            x['oi'] = int(round(x['oi']))
+            for f in ('L', 'S', 'byC'):
+                x[f] = {k: int(round(q)) for k, q in x[f].items()}
         if not add:
             continue
         n_add += len(add)
